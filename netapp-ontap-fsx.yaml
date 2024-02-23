@@ -1,0 +1,165 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: This template creates an Amazon FSx for NetApp ONTAP file system into private subnets in separate Availability Zones inside a VPC. *WARNING* This template creates Amazon resources. You will be billed for the AWS resources used if you create a stack from this template.
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: Network configuration
+        Parameters:
+          - Subnet1ID
+          - Subnet2ID
+          - myVpc
+          - FSxONTAPRouteTable
+      - Label:
+          default: Configurations for FSx ONTAP File System
+        Parameters:
+          - FileSystemName
+          - StorageCapacity
+          - ThroughputCapacity
+          - FSxAllowedCIDR
+          - WeeklyMaintenanceTime
+          - FsxAdminPassword
+      - Label:
+          default: Storage Virtual Machine configurations
+        Parameters:
+          - RootVolumeSecurityStyle
+          - SvmAdminPassword
+    ParameterLabels:
+      myVpc:
+        default: VPC ID
+      Subnet1ID:
+        default: Private Subnet 1 ID
+      Subnet2ID:
+        default: Private Subnet 2 ID
+      FSxONTAPRouteTable:
+        default: Route Table for FSxONTAP
+      FileSystemName:
+        default: Name of your File System
+      StorageCapacity:
+        default: Storage size
+      ThroughputCapacity:
+        default: Throughput capacity of Amazon FSx file system
+      FSxAllowedCIDR:
+        default: CIDR range allowed to connect to Amazon FSx file system
+      WeeklyMaintenanceTime:
+        default: Weekly Maintenance Time
+      FsxAdminPassword:
+        default: Admin password for managing FSx file system
+      RootVolumeSecurityStyle:
+        default: The security style of the root volume of the SVM
+      SvmAdminPassword:
+        default: Password for managing SVM in your FSxONTAP File System
+
+Parameters:
+  FileSystemName:
+    Type: String
+    Description: Specify a name for your file system to make it easier to find and manage.
+  myVpc:
+    Type: AWS::EC2::VPC::Id
+    Description: Choose the VPC to which you want to deploy the FSxONTAP cluster.
+  Subnet1ID:
+    Type: AWS::EC2::Subnet::Id
+    Description: Choose the first Subnet for the FSxONTAP file system's network interface.
+  Subnet2ID:
+    Type: AWS::EC2::Subnet::Id
+    Description: Choose the standby Subnet for the FSxONTAP file system's network interface.
+  FSxONTAPRouteTable:
+    Type: String
+    Description: Preferred route table IDs for FSxONTAP, separated by commas for multiple entries.
+  StorageCapacity:
+    Type: Number
+    Default: 1024
+    Description: Storage capacity in GiB. Min 1024 GiB; Max 192 TiB.
+  FSxAllowedCIDR:
+    Type: String
+    Description: CIDR block allowed access to the FSx file system.
+  ThroughputCapacity:
+    Type: Number
+    Description: Throughput capacity in MBps. Valid values: 512, 1024, 2048.
+    AllowedValues: [512, 1024, 2048]
+  WeeklyMaintenanceTime:
+    Type: String
+    Default: '7:01:00'
+    Description: Weekly maintenance start time, UTC, format d:HH:MM.
+  FsxAdminPassword:
+    Type: String
+    NoEcho: true
+    Description: Password for "fsxadmin" user, access ONTAP CLI or REST API.
+    MinLength: 5
+    MaxLength: 40
+    AllowedPattern: ^[a-zA-Z0-9]*$
+  RootVolumeSecurityStyle:
+    Type: String
+    Default: UNIX
+    Description: Security style of the SVM root volume. Values: UNIX, NTFS, MIXED.
+    AllowedValues: ["UNIX", "NTFS", "MIXED"]
+  SvmAdminPassword:
+    Type: String
+    NoEcho: true
+    Description: Password for managing SVM, access NetApp ONTAP CLI or REST API.
+    MinLength: 5
+    MaxLength: 40
+    AllowedPattern: ^[a-zA-Z0-9]*$
+
+Resources:
+  FSxONTAPSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      VpcId: !Ref myVpc
+      GroupDescription: Security Group for FSx ONTAP Access
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 0
+          ToPort: 65535
+          CidrIp: !Ref FSxAllowedCIDR
+
+  FSxONTAPFileSystem:
+    Type: AWS::FSx::FileSystem
+    Properties:
+      FileSystemType: ONTAP
+      StorageCapacity: !Ref StorageCapacity
+      SecurityGroupIds: [!GetAtt FSxONTAPSecurityGroup.GroupId]
+      SubnetIds: [!Ref Subnet1ID, !Ref Subnet2ID]
+      OntapConfiguration:
+        AutomaticBackupRetentionDays: 7
+        DailyAutomaticBackupStartTime: "02:00"
+        DeploymentType: MULTI_AZ_1
+        ThroughputCapacity: !Ref ThroughputCapacity
+        WeeklyMaintenanceStartTime: !Ref WeeklyMaintenanceTime
+        FsxAdminPassword: !Ref FsxAdminPassword
+
+  SVM:
+    Type: AWS::FSx::StorageVirtualMachine
+    Properties:
+      FileSystemId: !Ref FSxONTAPFileSystem
+      Name: !Ref FileSystemName
+      RootVolumeSecurityStyle: !Ref RootVolumeSecurityStyle
+      SvmAdminPassword: !Ref SvmAdminPassword
+
+  FSxAdminPasswordSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Description: FSx Admin Password
+      Name: !Sub "${FileSystemName}-fsx-admin-password"
+      SecretString: !Sub '{"username":"fsxadmin","password":"${FsxAdminPassword}"}'
+
+  SVMAdminPasswordSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Description: SVM Admin Password
+      Name: !Sub "${FileSystemName}-svm-admin-password"
+      SecretString: !Sub '{"username":"svmadmin","password":"${SvmAdminPassword}"}'
+
+Outputs:
+  FSxFileSystemID:
+    Description: "FSx for NetApp ONTAP FileSystem ID"
+    Value: !Ref FSxONTAPFileSystem
+
+  FSxAdminPasswordSecretARN:
+    Description: "ARN for FSx Admin Password in Secrets Manager"
+    Value: !Ref FSxAdminPasswordSecret
+
+  SVMAdminPasswordSecretARN:
+    Description: "ARN for SVM Admin Password in Secrets Manager"
+    Value: !Ref SVMAdminPasswordSecret
